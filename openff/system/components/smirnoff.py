@@ -442,6 +442,7 @@ class SMIRNOFFChargeIncrementHandler(  # type: ignore[misc]
 class ElectrostaticsMetaHandler(SMIRNOFFElectrostaticsMetadataMixin):
 
     name: str = "Electrostatics"
+    cutoff: float = 9.0
     charges: Dict = dict()  # type
     cache: Dict = dict()  # Dict[str: Dict[str, FloatQuantity["elementary_charge"]]]
 

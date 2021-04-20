@@ -248,62 +248,52 @@ def _process_nonbonded_forces(openff_sys, openmm_sys):
         if vdw_handler.method not in [val[0] for val in supported_cutoff_methods]:
             raise UnsupportedCutoffMethodError()
 
-        vdw_cutoff = vdw_handler.cutoff * unit.angstrom
-
-        electrostatics_handler = openff_sys.handlers["Electrostatics"]  # Split this out
-        if electrostatics_handler.method.lower() not in [
-            v[1] for v in supported_cutoff_methods
-        ]:
-            raise UnsupportedCutoffMethodError()
-
-        non_bonded_force = openmm.NonbondedForce()
-        openmm_sys.addForce(non_bonded_force)
-
-        # TODO: Add virtual particles
-        for _ in openff_sys.topology.mdtop.atoms:
-            non_bonded_force.addParticle(0.0, 1.0, 0.0)
+        vdw_force = openmm.CustomNonbondedForce(
+            "4*epsilon*((sigma/r)^12-(sigma/r)^6); sigma=0.5*(sigma1+sigma2); epsilon=sqrt(epsilon1*epsilon2)"
+        )
 
         if openff_sys.box is None:
-            non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
+            vdw_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
         else:
-            non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.PME)
-            non_bonded_force.setUseDispersionCorrection(True)
-            non_bonded_force.setCutoffDistance(vdw_cutoff)
+            vdw_force.setNonbondedMethod(openmm.NonbondedForce.CutoffPeriodic)
+            vdw_force.setUseDispersionCorrection(True)
+            vdw_cutoff = vdw_handler.cutoff * unit.angstrom
+            vdw_force.setCutoffDistance(vdw_cutoff)
 
         for top_key, pot_key in vdw_handler.slot_map.items():
             atom_idx = top_key.atom_indices[0]
 
-            partial_charge = electrostatics_handler.charges[top_key]
-            partial_charge = partial_charge.m_as(off_unit.elementary_charge)
+            partial_charge = 0.0
             vdw_potential = vdw_handler.potentials[pot_key]
             # these are floats, implicitly angstrom and kcal/mol
             sigma, epsilon = _lj_params_from_potential(vdw_potential)
             sigma = sigma.m_as(off_unit.nanometer)
             epsilon = epsilon.m_as(off_unit.kilojoule / off_unit.mol)
 
-            non_bonded_force.setParticleParameters(
-                atom_idx, partial_charge, sigma, epsilon
-            )
+            vdw_force.setParticleParameters(atom_idx, partial_charge, sigma, epsilon)
+
+        vdw_scale14 = vdw_handler.scale_14
+        openmm_sys.addForce(vdw_force)
 
     elif "Buckingham-6" in openff_sys.handlers:
         buck_handler = openff_sys.handlers["Buckingham-6"]
 
-        non_bonded_force = openmm.CustomNonbondedForce(
+        buck_force = openmm.CustomNonbondedForce(
             "A * exp(-B * r) - C * r ^ -6; A = sqrt(A1 * A2); B = 2 / (1 / B1 + 1 / B2); C = sqrt(C1 * C2)"
         )
-        non_bonded_force.addPerParticleParameter("A")
-        non_bonded_force.addPerParticleParameter("B")
-        non_bonded_force.addPerParticleParameter("C")
-        openmm_sys.addForce(non_bonded_force)
+        buck_force.addPerParticleParameter("A")
+        buck_force.addPerParticleParameter("B")
+        buck_force.addPerParticleParameter("C")
 
         for _ in openff_sys.topology.mdtop.atoms:
-            non_bonded_force.addParticle([0.0, 0.0, 0.0])
+            buck_force.addParticle([0.0, 0.0, 0.0])
 
         if openff_sys.box is None:
-            non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
+            buck_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
         else:
-            non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.CutoffPeriodic)
-            non_bonded_force.setCutoffDistance(buck_handler.cutoff * unit.angstrom)
+            vdw_cutoff = buck_handler.cutoff * unit.angstrom
+            buck_force.setNonbondedMethod(openmm.NonbondedForce.CutoffPeriodic)
+            buck_force.setCutoffDistance(vdw_cutoff)
 
         for top_key, pot_key in buck_handler.slot_map.items():
             atom_idx = top_key.atom_indices[0]
@@ -313,11 +303,40 @@ def _process_nonbonded_forces(openff_sys, openmm_sys):
             a = pint_to_simtk(params["A"])
             b = pint_to_simtk(params["B"])
             c = pint_to_simtk(params["C"])
-            non_bonded_force.setParticleParameters(atom_idx, [a, b, c])
+            buck_force.setParticleParameters(atom_idx, [a, b, c])
 
-        return
+        vdw_scale14 = buck_handler.scale_14
+        openmm_sys.addForce(buck_force)
 
-    # TODO: Figure out all of this post-processing with CustomNonbondedForce
+    if "Electrostatics" in openff_sys.handlers:
+        electrostatics_handler = openff_sys.handlers["Electrostatics"]
+        if electrostatics_handler.method.lower() not in [
+            v[1] for v in supported_cutoff_methods
+        ]:
+            raise UnsupportedCutoffMethodError()
+
+        coul_force = openmm.NonbondedForce()
+
+        # TODO: Add virtual particles
+        for _ in openff_sys.topology.mdtop.atoms:
+            coul_force.addParticle(0.0, 1.0, 0.0)
+
+        if openff_sys.box is None:
+            coul_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
+        else:
+            coul_force.setNonbondedMethod(openmm.NonbondedForce.PME)
+            coul_force.setUseDispersionCorrection(True)
+            coul_cutoff = electrostatics_handler.cutoff * unit.angstrom
+            coul_force.setCutoffDistance(coul_cutoff)
+
+        for top_key, partial_charge in electrostatics_handler.charges.items():
+            atom_idx = top_key.atom_indices[0]
+            partial_charge = partial_charge.m_as(off_unit.elementary_charge)
+            sigma, epsilon = 1.0, 0.0
+            coul_force.setParticleParameters(atom_idx, partial_charge, sigma, epsilon)
+
+        coul_scale14 = electrostatics_handler.scale_14
+        openmm_sys.addForce(coul_force)
 
     # from vdWHandler.postprocess_system, modified to work on an md.Topology
     bond_particle_indices = []
@@ -325,21 +344,21 @@ def _process_nonbonded_forces(openff_sys, openmm_sys):
     for bond in openff_sys.topology.mdtop.bonds:
         bond_particle_indices.append((bond.atom1.index, bond.atom2.index))
 
-    non_bonded_force.createExceptionsFromBonds(
-        bond_particle_indices,
-        electrostatics_handler.scale_14,
-        vdw_handler.scale_14,
-    )
+    for force in openmm_sys.getForces():
+        if type(force) in [openmm.NonbondedForce, openmm.CustomNonbondedForce]:
+            force.createExceptionsFromBonds(
+                bond_particle_indices, coul_scale14, vdw_scale14
+            )
 
-    non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.PME)
-    non_bonded_force.setCutoffDistance(9.0 * unit.angstrom)
-    non_bonded_force.setEwaldErrorTolerance(1.0e-4)
+    # non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.PME)
+    # non_bonded_force.setCutoffDistance(9.0 * unit.angstrom)
+    # non_bonded_force.setEwaldErrorTolerance(1.0e-4)
 
     # It's not clear why this needs to happen here, but it cannot be set above
     # and satisfy vdW/Electrostatics methods Cutoff and PME; see create_force
     # and postprocess_system methods in toolkit
-    if openff_sys.box is None:
-        non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
+    # if openff_sys.box is None:
+    #     non_bonded_force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
 
 
 def from_openmm(topology=None, system=None, positions=None, box_vectors=None):

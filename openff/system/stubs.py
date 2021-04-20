@@ -13,6 +13,7 @@ from openff.toolkit.typing.engines.smirnoff.parameters import (
     ProperTorsionHandler,
     vdWHandler,
 )
+from simtk import unit as simtk_unit
 
 from openff.system.components.misc import OFFBioTop
 from openff.system.components.smirnoff import (
@@ -84,6 +85,7 @@ def to_openff_system(
             scale_13=self["Electrostatics"].scale13,
             scale_14=self["Electrostatics"].scale14,
             scale_15=self["Electrostatics"].scale15,
+            cutoff=self["Electrostatics"].cutoff.value_in_unit(simtk_unit.angstrom),
         )
         if "ToolkitAM1BCC" in self.registered_parameter_handlers:
             electrostatics.cache_charges(
@@ -131,10 +133,7 @@ def to_openff_system(
     # `box` argument is only overriden if passed `None` and the input topology
     # has box vectors
     if box is None and topology.box_vectors is not None:
-        from simtk import unit
-
-        # getDefaultPeriodicBoxVectors() / unit.nanometer is a tuple
-        sys_out.box = np.asarray(topology.box_vectors / unit.nanometer)
+        sys_out.box = np.asarray(topology.box_vectors / simtk_unit.nanometer)
     else:
         sys_out.box = box
 
@@ -234,6 +233,7 @@ def create_vdw_potential_handler(
         scale_13=self.scale13,
         scale_14=self.scale14,
         scale_15=self.scale15,
+        cutoff=self.cutoff.value_in_unit(simtk_unit.angstrom),
     )
     handler.store_matches(parameter_handler=self, topology=topology)
     handler.store_potentials(parameter_handler=self)
